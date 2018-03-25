@@ -21,6 +21,7 @@ pub struct TextDecoder {
     reflector_: Reflector,
     encoding: &'static Encoding,
     fatal: bool,
+    ignoreBOM: bool,
     #[ignore_malloc_size_of = "defined in encoding_rs"]
     decoder_: RefCell<Decoder>,
     in_stream_: RefCell<Vec<u8>>,
@@ -28,12 +29,15 @@ pub struct TextDecoder {
 }
 
 impl TextDecoder {
-    fn new_inherited(encoding: &'static Encoding, fatal: bool) -> TextDecoder {
+    fn new_inherited(encoding: &'static Encoding, fatal: bool, ignoreBOM: bool) -> TextDecoder {
         TextDecoder {
             reflector_: Reflector::new(),
             encoding: encoding,
             fatal: fatal,
-            decoder_: RefCell::new(encoding.new_decoder_without_bom_handling()),
+            ignoreBOM: ignoreBOM,
+            decoder_: RefCell::new(
+                if ignoreBOM { encoding.new_decoder() } else { encoding.new_decoder_without_bom_handling() }
+            ),
             in_stream_: RefCell::new(Vec::new()),
             do_not_flush_: Cell::new(false),
         }
@@ -43,8 +47,8 @@ impl TextDecoder {
         Err(Error::Range("The given encoding is not supported.".to_owned()))
     }
 
-    pub fn new(global: &GlobalScope, encoding: &'static Encoding, fatal: bool) -> DomRoot<TextDecoder> {
-        reflect_dom_object(Box::new(TextDecoder::new_inherited(encoding, fatal)),
+    pub fn new(global: &GlobalScope, encoding: &'static Encoding, fatal: bool, ignoreBOM: bool) -> DomRoot<TextDecoder> {
+        reflect_dom_object(Box::new(TextDecoder::new_inherited(encoding, fatal, ignoreBOM)),
                            global,
                            TextDecoderBinding::Wrap)
     }
@@ -58,7 +62,7 @@ impl TextDecoder {
             None => return TextDecoder::make_range_error(),
             Some(enc) => enc
         };
-        Ok(TextDecoder::new(global, encoding, options.fatal))
+        Ok(TextDecoder::new(global, encoding, options.fatal, options.ignoreBOM))
     }
 }
 
@@ -74,6 +78,11 @@ impl TextDecoderMethods for TextDecoder {
         self.fatal
     }
 
+    // https://encoding.spec.whatwg.org/#dom-textdecoder-ignorebom
+    fn IgnoreBOM(&self) -> bool {
+        self.ignoreBOM
+    }
+
     #[allow(unsafe_code)]
     // https://encoding.spec.whatwg.org/#dom-textdecoder-decode
     fn Decode(&self,
@@ -81,9 +90,12 @@ impl TextDecoderMethods for TextDecoder {
               options: &TextDecoderBinding::TextDecodeOptions)
                     -> Fallible<USVString> {
         if !self.do_not_flush_.get() {
-            self.decoder_.replace(self.encoding.new_decoder_without_bom_handling());
+            if self.ignoreBOM {
+                self.decoder_.replace(self.encoding.new_decoder_without_bom_handling());
+            } else {
+                self.decoder_.replace(self.encoding.new_decoder());
+            }
             self.in_stream_.replace(Vec::new());
-            // TODO unset the "BOM seen flag"
         }
 
         self.do_not_flush_.set(options.stream);
@@ -136,8 +148,11 @@ impl TextDecoderMethods for TextDecoder {
                     Some(s) => s,
                     None => return Err(Error::Type("Decoding failed".to_owned())),
                 }
-            } else {
+            } else if self.ignoreBOM {
                 let (s, _has_errors) = self.encoding.decode_without_bom_handling(&in_stream);
+                s
+            } else {
+                let (s, _encoding, _has_errors) = self.encoding.decode(&in_stream);
                 s
             };
             Ok(USVString(s.into_owned()))

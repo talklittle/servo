@@ -5,7 +5,7 @@
 // https://encoding.spec.whatwg.org/#interface-textdecoder
 dictionary TextDecoderOptions {
   boolean fatal = false;
-  //boolean ignoreBOM = false;
+  boolean ignoreBOM = false;
 };
 
 dictionary TextDecodeOptions {
@@ -16,7 +16,7 @@ dictionary TextDecodeOptions {
 interface TextDecoder {
   readonly attribute DOMString encoding;
   readonly attribute boolean fatal;
-  //readonly attribute boolean ignoreBOM;
+  readonly attribute boolean ignoreBOM;
   [Throws]
   USVString decode(optional BufferSource input, optional TextDecodeOptions options);
 };
