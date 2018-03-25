@@ -98,35 +98,49 @@ impl TextDecoderMethods for TextDecoder {
             None => {},
         };
 
-        let mut decoder = self.decoder_.borrow_mut();
-        let (remaining, s) = {
-            let mut in_stream = self.in_stream_.borrow_mut();
+        if options.stream {
+            let mut decoder = self.decoder_.borrow_mut();
+            let (remaining, s) = {
+                let mut in_stream = self.in_stream_.borrow_mut();
 
-            let (remaining, s) = if self.fatal {
-                let mut out_stream = String::with_capacity(
-                    decoder.max_utf8_buffer_length_without_replacement(in_stream.len()).unwrap()
-                );
-                match decoder.decode_to_string_without_replacement(&in_stream, &mut out_stream, !options.stream) {
-                    (DecoderResult::InputEmpty, read) => {
-                        (in_stream.split_off(read), out_stream)
-                    },
-                    _ => return Err(Error::Type("Decoding failed".to_owned())),
+                let (remaining, s) = if self.fatal {
+                    let mut out_stream = String::with_capacity(
+                        decoder.max_utf8_buffer_length_without_replacement(in_stream.len()).unwrap()
+                    );
+                    match decoder.decode_to_string_without_replacement(&in_stream, &mut out_stream, !options.stream) {
+                        (DecoderResult::InputEmpty, read) => {
+                            (in_stream.split_off(read), out_stream)
+                        },
+                        _ => return Err(Error::Type("Decoding failed".to_owned())),
+                    }
+                } else {
+                    let valid_up_to = if self.encoding == encoding_rs::UTF_8 {
+                        Encoding::utf8_valid_up_to(&in_stream)
+                    } else if self.encoding == encoding_rs::ISO_2022_JP {
+                        Encoding::iso_2022_jp_ascii_valid_up_to(&in_stream)
+                    } else {
+                        Encoding::ascii_valid_up_to(&in_stream)
+                    };
+                    let mut out_stream = String::with_capacity(decoder.max_utf8_buffer_length(in_stream.len()).unwrap());
+                    let (_result, read, _replaced) = decoder.decode_to_string(&in_stream[..valid_up_to], &mut out_stream, !options.stream);
+                    (in_stream.split_off(read), out_stream)
+                };
+                (remaining, s)
+            };
+            self.in_stream_.replace(remaining);
+            Ok(USVString(s))
+        } else {
+            let in_stream = self.in_stream_.borrow();
+            let s = if self.fatal {
+                match self.encoding.decode_without_bom_handling_and_without_replacement(&in_stream) {
+                    Some(s) => s,
+                    None => return Err(Error::Type("Decoding failed".to_owned())),
                 }
             } else {
-                let valid_up_to = if self.encoding == encoding_rs::UTF_8 {
-                    Encoding::utf8_valid_up_to(&in_stream)
-                } else if self.encoding == encoding_rs::ISO_2022_JP {
-                    Encoding::iso_2022_jp_ascii_valid_up_to(&in_stream)
-                } else {
-                    Encoding::ascii_valid_up_to(&in_stream)
-                };
-                let mut out_stream = String::with_capacity(decoder.max_utf8_buffer_length(in_stream.len()).unwrap());
-                let (_result, read, _replaced) = decoder.decode_to_string(&in_stream[..valid_up_to], &mut out_stream, !options.stream);
-                (in_stream.split_off(read), out_stream)
+                let (s, _has_errors) = self.encoding.decode_without_bom_handling(&in_stream);
+                s
             };
-            (remaining, s)
-        };
-        self.in_stream_.replace(remaining);
-        Ok(USVString(s))
+            Ok(USVString(s.into_owned()))
+        }
     }
 }
