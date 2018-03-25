@@ -4,6 +4,7 @@
 
 use dom::bindings::codegen::Bindings::TextDecoderBinding;
 use dom::bindings::codegen::Bindings::TextDecoderBinding::TextDecoderMethods;
+use dom::bindings::codegen::UnionTypes::ArrayBufferViewOrArrayBuffer;
 use dom::bindings::error::{Error, Fallible};
 use dom::bindings::reflector::{Reflector, reflect_dom_object};
 use dom::bindings::root::DomRoot;
@@ -11,7 +12,6 @@ use dom::bindings::str::{DOMString, USVString};
 use dom::globalscope::GlobalScope;
 use dom_struct::dom_struct;
 use encoding_rs::Encoding;
-use js::jsapi::{JSContext, JSObject};
 use std::borrow::ToOwned;
 
 #[dom_struct]
@@ -67,28 +67,29 @@ impl TextDecoderMethods for TextDecoder {
 
     #[allow(unsafe_code)]
     // https://encoding.spec.whatwg.org/#dom-textdecoder-decode
-    unsafe fn Decode(&self, _cx: *mut JSContext, input: Option<*mut JSObject>)
-              -> Fallible<USVString> {
+    fn Decode(&self,
+              input: Option<ArrayBufferViewOrArrayBuffer>,
+              _options: &TextDecoderBinding::TextDecodeOptions)
+                    -> Fallible<USVString> {
         let input = match input {
             Some(input) => input,
             None => return Ok(USVString("".to_owned())),
         };
 
-        typedarray!(in(_cx) let data_res: ArrayBufferView = input);
-        let mut data = match data_res {
-            Ok(data) => data,
-            Err(_)   => {
+        let mut data = match input {
+            ArrayBufferViewOrArrayBuffer::ArrayBufferView(data) => data,
+            _ => {
                 return Err(Error::Type("Argument to TextDecoder.decode is not an ArrayBufferView".to_owned()));
             }
         };
 
         let s = if self.fatal {
-            match self.encoding.decode_without_bom_handling_and_without_replacement(data.as_slice()) {
+            match self.encoding.decode_without_bom_handling_and_without_replacement(unsafe { data.as_slice() }) {
                 Some(s) => s,
                 None => return Err(Error::Type("Decoding failed".to_owned())),
             }
         } else {
-            let (s, _has_errors) = self.encoding.decode_without_bom_handling(data.as_slice());
+            let (s, _has_errors) = self.encoding.decode_without_bom_handling(unsafe { data.as_slice() });
             s
         };
         Ok(USVString(s.into_owned()))
