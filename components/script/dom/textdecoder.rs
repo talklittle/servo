@@ -11,6 +11,7 @@ use dom::bindings::root::DomRoot;
 use dom::bindings::str::{DOMString, USVString};
 use dom::globalscope::GlobalScope;
 use dom_struct::dom_struct;
+use encoding_rs;
 use encoding_rs::{Decoder, DecoderResult, Encoding};
 use std::borrow::ToOwned;
 use std::cell::{Cell, RefCell};
@@ -80,11 +81,10 @@ impl TextDecoderMethods for TextDecoder {
               options: &TextDecoderBinding::TextDecodeOptions)
                     -> Fallible<USVString> {
         if !self.do_not_flush_.get() {
-            // self.decoder_.replace(self.encoding.new_decoder_without_bom_handling());
+            self.decoder_.replace(self.encoding.new_decoder_without_bom_handling());
             self.in_stream_.replace(Vec::new());
             // TODO unset the "BOM seen flag"
         }
-        self.decoder_.replace(self.encoding.new_decoder_without_bom_handling());
 
         self.do_not_flush_.set(options.stream);
 
@@ -101,19 +101,27 @@ impl TextDecoderMethods for TextDecoder {
         let mut decoder = self.decoder_.borrow_mut();
         let (remaining, s) = {
             let mut in_stream = self.in_stream_.borrow_mut();
+
             let (remaining, s) = if self.fatal {
                 let mut out_stream = String::with_capacity(
                     decoder.max_utf8_buffer_length_without_replacement(in_stream.len()).unwrap()
                 );
-                match decoder.decode_to_string_without_replacement(&in_stream, &mut out_stream, true) {
+                match decoder.decode_to_string_without_replacement(&in_stream, &mut out_stream, !options.stream) {
                     (DecoderResult::InputEmpty, read) => {
                         (in_stream.split_off(read), out_stream)
                     },
                     _ => return Err(Error::Type("Decoding failed".to_owned())),
                 }
             } else {
+                let valid_up_to = if self.encoding == encoding_rs::UTF_8 {
+                    Encoding::utf8_valid_up_to(&in_stream)
+                } else if self.encoding == encoding_rs::ISO_2022_JP {
+                    Encoding::iso_2022_jp_ascii_valid_up_to(&in_stream)
+                } else {
+                    Encoding::ascii_valid_up_to(&in_stream)
+                };
                 let mut out_stream = String::with_capacity(decoder.max_utf8_buffer_length(in_stream.len()).unwrap());
-                let (_result, read, _replaced) = decoder.decode_to_string(&in_stream, &mut out_stream, true);
+                let (_result, read, _replaced) = decoder.decode_to_string(&in_stream[..valid_up_to], &mut out_stream, !options.stream);
                 (in_stream.split_off(read), out_stream)
             };
             (remaining, s)
