@@ -11,14 +11,19 @@ use dom::bindings::root::DomRoot;
 use dom::bindings::str::{DOMString, USVString};
 use dom::globalscope::GlobalScope;
 use dom_struct::dom_struct;
-use encoding_rs::Encoding;
+use encoding_rs::{Decoder, DecoderResult, Encoding};
 use std::borrow::ToOwned;
+use std::cell::{Cell, RefCell};
 
 #[dom_struct]
 pub struct TextDecoder {
     reflector_: Reflector,
     encoding: &'static Encoding,
     fatal: bool,
+    #[ignore_malloc_size_of = "defined in encoding_rs"]
+    decoder_: RefCell<Decoder>,
+    in_stream_: RefCell<Vec<u8>>,
+    do_not_flush_: Cell<bool>,
 }
 
 impl TextDecoder {
@@ -27,6 +32,9 @@ impl TextDecoder {
             reflector_: Reflector::new(),
             encoding: encoding,
             fatal: fatal,
+            decoder_: RefCell::new(encoding.new_decoder_without_bom_handling()),
+            in_stream_: RefCell::new(Vec::new()),
+            do_not_flush_: Cell::new(false),
         }
     }
 
@@ -69,29 +77,48 @@ impl TextDecoderMethods for TextDecoder {
     // https://encoding.spec.whatwg.org/#dom-textdecoder-decode
     fn Decode(&self,
               input: Option<ArrayBufferViewOrArrayBuffer>,
-              _options: &TextDecoderBinding::TextDecodeOptions)
+              options: &TextDecoderBinding::TextDecodeOptions)
                     -> Fallible<USVString> {
-        let input = match input {
-            Some(input) => input,
-            None => return Ok(USVString("".to_owned())),
+        if !self.do_not_flush_.get() {
+            // self.decoder_.replace(self.encoding.new_decoder_without_bom_handling());
+            self.in_stream_.replace(Vec::new());
+            // TODO unset the "BOM seen flag"
+        }
+        self.decoder_.replace(self.encoding.new_decoder_without_bom_handling());
+
+        self.do_not_flush_.set(options.stream);
+
+        match input {
+            Some(ArrayBufferViewOrArrayBuffer::ArrayBufferView(mut data)) => {
+                self.in_stream_.borrow_mut().extend_from_slice(unsafe { data.as_slice() });
+            },
+            Some(ArrayBufferViewOrArrayBuffer::ArrayBuffer(mut data)) => {
+                self.in_stream_.borrow_mut().extend_from_slice(unsafe { data.as_slice() });
+            },
+            None => {},
         };
 
-        let mut data = match input {
-            ArrayBufferViewOrArrayBuffer::ArrayBufferView(data) => data,
-            _ => {
-                return Err(Error::Type("Argument to TextDecoder.decode is not an ArrayBufferView".to_owned()));
-            }
+        let mut decoder = self.decoder_.borrow_mut();
+        let (remaining, s) = {
+            let mut in_stream = self.in_stream_.borrow_mut();
+            let (remaining, s) = if self.fatal {
+                let mut out_stream = String::with_capacity(
+                    decoder.max_utf8_buffer_length_without_replacement(in_stream.len()).unwrap()
+                );
+                match decoder.decode_to_string_without_replacement(&in_stream, &mut out_stream, true) {
+                    (DecoderResult::InputEmpty, read) => {
+                        (in_stream.split_off(read), out_stream)
+                    },
+                    _ => return Err(Error::Type("Decoding failed".to_owned())),
+                }
+            } else {
+                let mut out_stream = String::with_capacity(decoder.max_utf8_buffer_length(in_stream.len()).unwrap());
+                let (_result, read, _replaced) = decoder.decode_to_string(&in_stream, &mut out_stream, true);
+                (in_stream.split_off(read), out_stream)
+            };
+            (remaining, s)
         };
-
-        let s = if self.fatal {
-            match self.encoding.decode_without_bom_handling_and_without_replacement(unsafe { data.as_slice() }) {
-                Some(s) => s,
-                None => return Err(Error::Type("Decoding failed".to_owned())),
-            }
-        } else {
-            let (s, _has_errors) = self.encoding.decode_without_bom_handling(unsafe { data.as_slice() });
-            s
-        };
-        Ok(USVString(s.into_owned()))
+        self.in_stream_.replace(remaining);
+        Ok(USVString(s))
     }
 }
